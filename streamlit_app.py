@@ -3,7 +3,13 @@ import requests
 import pandas as pd
 import xml.etree.ElementTree as ET
 from urllib.parse import urljoin
-from bs4 import BeautifulSoup
+import time
+
+# Initialize session state
+if 'sitemap_urls' not in st.session_state:
+    st.session_state.sitemap_urls = []
+if 'content_data' not in st.session_state:
+    st.session_state.content_data = []
 
 # User agent to mimic a browser
 HEADERS = {
@@ -15,83 +21,40 @@ def check_password():
     def password_entered():
         if st.session_state["password"] == st.secrets["password"]:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # don't store password
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        # First run, show input for password.
         st.text_input(
             "Password", type="password", on_change=password_entered, key="password"
         )
         return False
     elif not st.session_state["password_correct"]:
-        # Password incorrect, show input + error.
         st.text_input(
             "Password", type="password", on_change=password_entered, key="password"
         )
         st.error("😕 Password incorrect")
         return False
     else:
-        # Password correct.
         return True
 
-def get_sitemap(base_url):
-    sitemap_urls = [
-        '/sitemap.xml',
-        '/sitemap_index.xml',
-        '/sitemap1.xml',
-        '/sitemap-index.xml',
-        '/post-sitemap.xml'
-    ]
-    
-    for sitemap_url in sitemap_urls:
-        try:
-            url = urljoin(base_url, sitemap_url)
-            response = requests.get(url, headers=HEADERS)
-            response.raise_for_status()
-            
-            content_type = response.headers.get('Content-Type', '').lower()
-            if 'xml' in content_type:
-                root = ET.fromstring(response.content)
-                urls = [element.text for element in root.iter('{http://www.sitemaps.org/schemas/sitemap/0.9}loc')]
-                if urls:
-                    st.success(f"Successfully fetched sitemap from {url}")
-                    return urls
-        except requests.RequestException as e:
-            st.warning(f"Failed to fetch sitemap from {url}: {str(e)}")
-        except ET.ParseError as e:
-            st.warning(f"Failed to parse XML from {url}: {str(e)}")
-    
-    st.warning("Could not find a valid sitemap. Falling back to scraping the main page.")
-    return [base_url]
-
-def get_page_content(url):
+def get_sitemap_urls(url):
     try:
         response = requests.get(url, headers=HEADERS)
         response.raise_for_status()
-        return BeautifulSoup(response.content, 'html.parser')
-    except requests.RequestException as e:
-        st.error(f"Failed to fetch the page content: {str(e)}")
-        return None
-
-def extract_links_and_downloads(soup, base_url):
-    links = []
-    downloads = []
-
-    if soup is None:
-        return links, downloads
-
-    for a in soup.find_all('a', href=True):
-        href = a['href']
-        full_url = urljoin(base_url, href)
-        
-        if any(full_url.lower().endswith(ext) for ext in ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.zip']):
-            downloads.append(full_url)
-        else:
-            links.append(full_url)
-
-    return links, downloads
+        root = ET.fromstring(response.content)
+        urls = []
+        for sitemap in root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}sitemap'):
+            sitemap_url = sitemap.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
+            urls.extend(get_sitemap_urls(sitemap_url))
+        for url in root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}url'):
+            loc = url.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
+            urls.append(loc)
+        return urls
+    except Exception as e:
+        st.warning(f"Failed to fetch sitemap from {url}: {str(e)}")
+        return []
 
 def get_jina_reader_content(url):
     jina_url = f"https://r.jina.ai/{url}"
@@ -99,7 +62,7 @@ def get_jina_reader_content(url):
     if response.status_code == 200:
         return response.text
     else:
-        return "Failed to fetch content"
+        return f"Failed to fetch content: {response.status_code}"
 
 def main():
     st.title('Web Scraper App with Sitemap and Jina Reader')
@@ -109,47 +72,53 @@ def main():
 
         website = st.text_input('Enter website URL (including http:// or https://):')
         
-        if st.button('Fetch Sitemap, Content, Links, and Downloads'):
+        if st.button('Fetch Sitemap and Content'):
             if website:
-                urls = get_sitemap(website)
+                st.session_state.sitemap_urls = get_sitemap_urls(urljoin(website, '/sitemap.xml'))
                 
-                st.write(f"Processing {len(urls)} URLs:")
-                content_data = []
-                for url in urls:
-                    st.write(f"Processing: {url}")
-                    soup = get_page_content(url)
+                if st.session_state.sitemap_urls:
+                    st.subheader("Sitemap URLs:")
+                    sitemap_df = pd.DataFrame({'URL': st.session_state.sitemap_urls})
+                    st.dataframe(sitemap_df)
                     
-                    if soup:
-                        # Extract text content
-                        content = soup.get_text()
-                        
-                        # Extract links and downloads
-                        links, downloads = extract_links_and_downloads(soup, url)
-                        
-                        # Get Jina Reader content
-                        jina_content = get_jina_reader_content(url)
-                        
-                        content_data.append({
+                    st.subheader("Fetching Content:")
+                    progress_bar = st.progress(0)
+                    st.session_state.content_data = []
+                    
+                    for i, url in enumerate(st.session_state.sitemap_urls):
+                        content = get_jina_reader_content(url)
+                        st.session_state.content_data.append({
                             'URL': url,
-                            'Content Preview': content[:500] + "..." if len(content) > 500 else content,
-                            'Jina Content Preview': jina_content[:500] + "..." if len(jina_content) > 500 else jina_content,
-                            'Links': ', '.join(links[:5]) + "..." if len(links) > 5 else ', '.join(links),
-                            'Downloads': ', '.join(downloads)
+                            'Content Preview': content[:500] + "..." if len(content) > 500 else content
                         })
-                
-                # Create a DataFrame for the content
-                content_df = pd.DataFrame(content_data)
-                
-                st.subheader("Scraped Content:")
-                st.dataframe(content_df)
-                
-                # Option to view full content for a selected URL
-                selected_url = st.selectbox("Select a URL to view full content:", urls)
-                if selected_url:
-                    full_content = get_jina_reader_content(selected_url)
-                    st.text_area(f"Full Jina Reader content for {selected_url}", full_content, height=400)
+                        progress_bar.progress((i + 1) / len(st.session_state.sitemap_urls))
+                        time.sleep(1)  # Rate limiting
+                    
+                    st.subheader("Scraped Content:")
+                    content_df = pd.DataFrame(st.session_state.content_data)
+                    st.dataframe(content_df)
+                else:
+                    st.warning("No URLs found in the sitemap.")
             else:
                 st.warning('Please enter a website URL')
+        
+        # Display tables if data exists in session state
+        if st.session_state.sitemap_urls:
+            st.subheader("Sitemap URLs:")
+            sitemap_df = pd.DataFrame({'URL': st.session_state.sitemap_urls})
+            st.dataframe(sitemap_df)
+        
+        if st.session_state.content_data:
+            st.subheader("Scraped Content:")
+            content_df = pd.DataFrame(st.session_state.content_data)
+            st.dataframe(content_df)
+        
+        # Option to view full content for a selected URL
+        if st.session_state.sitemap_urls:
+            selected_url = st.selectbox("Select a URL to view full content:", st.session_state.sitemap_urls)
+            if selected_url:
+                full_content = get_jina_reader_content(selected_url)
+                st.text_area(f"Full Jina Reader content for {selected_url}", full_content, height=400)
 
 if __name__ == "__main__":
     main()
