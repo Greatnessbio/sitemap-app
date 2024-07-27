@@ -4,6 +4,11 @@ from bs4 import BeautifulSoup
 import xml.etree.ElementTree as ET
 from urllib.parse import urljoin
 
+# User agent to mimic a browser
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+}
+
 def check_password():
     """Returns `True` if the user had the correct password."""
     def password_entered():
@@ -30,34 +35,39 @@ def check_password():
         # Password correct.
         return True
 
-def get_sitemap(url):
-    try:
-        response = requests.get(url)
-        response.raise_for_status()  # Raise an exception for bad status codes
-        
-        # Check if the content type is XML
-        content_type = response.headers.get('Content-Type', '').lower()
-        if 'xml' not in content_type:
-            st.warning(f"The response doesn't seem to be XML. Content-Type: {content_type}")
-            st.text("First 500 characters of the response:")
-            st.code(response.text[:500])
-            return []
-
-        root = ET.fromstring(response.content)
-        urls = [element.text for element in root.iter('{http://www.sitemaps.org/schemas/sitemap/0.9}loc')]
-        return urls
-    except requests.RequestException as e:
-        st.error(f"Failed to fetch the sitemap: {str(e)}")
-        return []
-    except ET.ParseError as e:
-        st.error(f"Failed to parse the XML: {str(e)}")
-        st.text("First 500 characters of the response:")
-        st.code(response.text[:500])
-        return []
+def get_sitemap(base_url):
+    sitemap_urls = [
+        '/sitemap.xml',
+        '/sitemap_index.xml',
+        '/sitemap1.xml',
+        '/sitemap-index.xml',
+        '/post-sitemap.xml'
+    ]
+    
+    for sitemap_url in sitemap_urls:
+        try:
+            url = urljoin(base_url, sitemap_url)
+            response = requests.get(url, headers=HEADERS)
+            response.raise_for_status()
+            
+            content_type = response.headers.get('Content-Type', '').lower()
+            if 'xml' in content_type:
+                root = ET.fromstring(response.content)
+                urls = [element.text for element in root.iter('{http://www.sitemaps.org/schemas/sitemap/0.9}loc')]
+                if urls:
+                    st.success(f"Successfully fetched sitemap from {url}")
+                    return urls
+        except requests.RequestException as e:
+            st.warning(f"Failed to fetch sitemap from {url}: {str(e)}")
+        except ET.ParseError as e:
+            st.warning(f"Failed to parse XML from {url}: {str(e)}")
+    
+    st.warning("Could not find a valid sitemap. Falling back to scraping the main page.")
+    return []
 
 def get_page_content(url):
     try:
-        response = requests.get(url)
+        response = requests.get(url, headers=HEADERS)
         response.raise_for_status()
         return BeautifulSoup(response.content, 'html.parser')
     except requests.RequestException as e:
@@ -92,33 +102,33 @@ def main():
         
         if st.button('Fetch Sitemap, Content, Links, and Downloads'):
             if website:
-                sitemap_url = website + '/sitemap.xml'
-                urls = get_sitemap(sitemap_url)
-                if urls:
-                    st.write(f"Found {len(urls)} URLs in the sitemap:")
-                    for url in urls:
-                        st.write(f"Processing: {url}")
-                        soup = get_page_content(url)
+                urls = get_sitemap(website)
+                if not urls:
+                    st.info("Falling back to scraping the main page.")
+                    urls = [website]
+                
+                st.write(f"Processing {len(urls)} URLs:")
+                for url in urls:
+                    st.write(f"Processing: {url}")
+                    soup = get_page_content(url)
+                    
+                    if soup:
+                        # Extract text content
+                        content = soup.get_text()
+                        st.text_area(f"Content from {url}", content, height=200)
                         
-                        if soup:
-                            # Extract text content
-                            content = soup.get_text()
-                            st.text_area(f"Content from {url}", content, height=200)
-                            
-                            # Extract links and downloads
-                            links, downloads = extract_links_and_downloads(soup, url)
-                            
-                            st.write("Links found:")
-                            for link in links:
-                                st.write(link)
-                            
-                            st.write("Downloads found:")
-                            for download in downloads:
-                                st.write(download)
-                            
-                            st.write("---")  # Separator between pages
-                else:
-                    st.warning("No URLs found in the sitemap or failed to fetch the sitemap.")
+                        # Extract links and downloads
+                        links, downloads = extract_links_and_downloads(soup, url)
+                        
+                        st.write("Links found:")
+                        for link in links:
+                            st.write(link)
+                        
+                        st.write("Downloads found:")
+                        for download in downloads:
+                            st.write(download)
+                        
+                        st.write("---")  # Separator between pages
             else:
                 st.warning('Please enter a website URL')
 
