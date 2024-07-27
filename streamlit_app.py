@@ -4,6 +4,32 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from urllib.parse import urljoin
 
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    def password_entered():
+        if st.session_state["password"] == st.secrets["password"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # First run, show input for password.
+        st.text_input(
+            "Password", type="password", on_change=password_entered, key="password"
+        )
+        return False
+    elif not st.session_state["password_correct"]:
+        # Password incorrect, show input + error.
+        st.text_input(
+            "Password", type="password", on_change=password_entered, key="password"
+        )
+        st.error("😕 Password incorrect")
+        return False
+    else:
+        # Password correct.
+        return True
+
 def get_sitemap(base_url):
     sitemap_urls = ['/sitemap.xml', '/sitemap_index.xml', '/sitemap1.xml', '/sitemap-index.xml', '/post-sitemap.xml']
     
@@ -35,40 +61,43 @@ def get_jina_reader_content(url):
 def main():
     st.title('Web Scraper App with Sitemap and Jina Reader')
 
-    website = st.text_input('Enter website URL (including http:// or https://):')
-    
-    if st.button('Fetch Sitemap and Content'):
-        if website:
-            urls = get_sitemap(website)
-            
-            # Create a DataFrame for the sitemap
-            sitemap_df = pd.DataFrame({'URL': urls})
-            
-            st.subheader("Sitemap URLs:")
-            st.dataframe(sitemap_df)
-            
-            # Fetch content for each URL
-            content_data = []
-            for url in urls:
-                content = get_jina_reader_content(url)
-                content_data.append({
-                    'URL': url,
-                    'Content Preview': content[:500] + "..." if len(content) > 500 else content
-                })
-            
-            # Create a DataFrame for the content
-            content_df = pd.DataFrame(content_data)
-            
-            st.subheader("Scraped Content:")
-            st.dataframe(content_df)
-            
-            # Option to view full content for a selected URL
-            selected_url = st.selectbox("Select a URL to view full content:", urls)
-            if selected_url:
-                full_content = get_jina_reader_content(selected_url)
-                st.text_area(f"Full content for {selected_url}", full_content, height=400)
-        else:
-            st.warning('Please enter a website URL')
+    if check_password():
+        st.success("Logged in successfully!")
+
+        website = st.text_input('Enter website URL (including http:// or https://):')
+        
+        if st.button('Fetch Sitemap and Content'):
+            if website:
+                urls = get_sitemap(website)
+                
+                # Create a DataFrame for the sitemap
+                sitemap_df = pd.DataFrame({'URL': urls})
+                
+                st.subheader("Sitemap URLs:")
+                st.dataframe(sitemap_df)
+                
+                # Fetch content for each URL
+                content_data = []
+                for url in urls:
+                    content = get_jina_reader_content(url)
+                    content_data.append({
+                        'URL': url,
+                        'Content Preview': content[:500] + "..." if len(content) > 500 else content
+                    })
+                
+                # Create a DataFrame for the content
+                content_df = pd.DataFrame(content_data)
+                
+                st.subheader("Scraped Content:")
+                st.dataframe(content_df)
+                
+                # Option to view full content for a selected URL
+                selected_url = st.selectbox("Select a URL to view full content:", urls)
+                if selected_url:
+                    full_content = get_jina_reader_content(selected_url)
+                    st.text_area(f"Full content for {selected_url}", full_content, height=400)
+            else:
+                st.warning('Please enter a website URL')
 
 if __name__ == "__main__":
     main()
