@@ -134,7 +134,7 @@ def main():
                         content = get_jina_reader_content(url)
                         st.session_state.content_data.append({
                             'URL': url,
-                            'Content Preview': content[:500] + "..." if len(content) > 500 else content
+                            'Full Content': content
                         })
                         progress_bar.progress((i + 1) / len(st.session_state.sitemap_urls))
                     
@@ -161,8 +161,11 @@ def main():
         if st.session_state.sitemap_urls:
             selected_url = st.selectbox("Select a URL to view full content:", st.session_state.sitemap_urls)
             if selected_url:
-                full_content = get_jina_reader_content(selected_url)
-                st.text_area(f"Full Jina Reader content for {selected_url}", full_content, height=400)
+                full_content = next((item['Full Content'] for item in st.session_state.content_data if item['URL'] == selected_url), None)
+                if full_content:
+                    st.text_area(f"Full content for {selected_url}", full_content, height=400)
+                else:
+                    st.warning("Content not found for the selected URL.")
 
 if __name__ == "__main__":
     main()
