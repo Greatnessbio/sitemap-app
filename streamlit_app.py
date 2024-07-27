@@ -2,17 +2,14 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 import xml.etree.ElementTree as ET
-import yaml
 from urllib.parse import urljoin
 
-# Load secrets
-with open('secrets.yaml') as f:
-    secrets = yaml.safe_load(f)
+# Streamlit automatically loads secrets from .streamlit/secrets.toml
 
 def check_password():
     """Returns `True` if the user had the correct password."""
     def password_entered():
-        if st.session_state["password"] == secrets["password"]:
+        if st.session_state["password"] == st.secrets["password"]:
             st.session_state["password_correct"] = True
             del st.session_state["password"]  # don't store password
         else:
