@@ -4,6 +4,9 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from urllib.parse import urljoin
 import time
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
+import threading
 
 # Initialize session state
 if 'sitemap_urls' not in st.session_state:
@@ -15,6 +18,45 @@ if 'content_data' not in st.session_state:
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 }
+
+# Create a retry strategy
+retry_strategy = Retry(
+    total=3,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["HEAD", "GET", "OPTIONS"],
+    backoff_factor=1
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+http = requests.Session()
+http.mount("https://", adapter)
+http.mount("http://", adapter)
+
+# Rate limiting setup
+RATE_LIMIT = 20  # requests per minute
+RATE_LIMIT_PERIOD = 60  # seconds
+DELAY_BETWEEN_REQUESTS = 3  # seconds
+
+class RateLimiter:
+    def __init__(self, max_calls, period):
+        self.max_calls = max_calls
+        self.period = period
+        self.calls = []
+        self.lock = threading.Lock()
+
+    def __call__(self, f):
+        def wrapped(*args, **kwargs):
+            with self.lock:
+                now = time.time()
+                # Remove calls older than the period
+                self.calls = [c for c in self.calls if c > now - self.period]
+                if len(self.calls) >= self.max_calls:
+                    sleep_time = self.calls[0] - (now - self.period)
+                    time.sleep(sleep_time)
+                self.calls.append(time.time())
+            return f(*args, **kwargs)
+        return wrapped
+
+rate_limiter = RateLimiter(RATE_LIMIT, RATE_LIMIT_PERIOD)
 
 def check_password():
     """Returns `True` if the user had the correct password."""
@@ -41,7 +83,7 @@ def check_password():
 
 def get_sitemap_urls(url):
     try:
-        response = requests.get(url, headers=HEADERS)
+        response = http.get(url, headers=HEADERS)
         response.raise_for_status()
         root = ET.fromstring(response.content)
         urls = []
@@ -56,13 +98,16 @@ def get_sitemap_urls(url):
         st.warning(f"Failed to fetch sitemap from {url}: {str(e)}")
         return []
 
+@rate_limiter
 def get_jina_reader_content(url):
     jina_url = f"https://r.jina.ai/{url}"
-    response = requests.get(jina_url)
-    if response.status_code == 200:
+    try:
+        response = http.get(jina_url)
+        response.raise_for_status()
+        time.sleep(DELAY_BETWEEN_REQUESTS)  # Ensure 3-second delay between requests
         return response.text
-    else:
-        return f"Failed to fetch content: {response.status_code}"
+    except requests.exceptions.RequestException as e:
+        return f"Failed to fetch content: {str(e)}"
 
 def main():
     st.title('Web Scraper App with Sitemap and Jina Reader')
@@ -92,7 +137,6 @@ def main():
                             'Content Preview': content[:500] + "..." if len(content) > 500 else content
                         })
                         progress_bar.progress((i + 1) / len(st.session_state.sitemap_urls))
-                        time.sleep(1)  # Rate limiting
                     
                     st.subheader("Scraped Content:")
                     content_df = pd.DataFrame(st.session_state.content_data)
