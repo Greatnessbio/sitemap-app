@@ -81,22 +81,50 @@ def check_password():
     else:
         return True
 
-def get_sitemap_urls(url):
+def get_sitemap_from_robots_txt(url):
+    robots_txt_url = urljoin(url, '/robots.txt')
     try:
-        response = http.get(url, headers=HEADERS)
+        response = http.get(robots_txt_url, headers=HEADERS)
         response.raise_for_status()
-        root = ET.fromstring(response.content)
-        urls = []
-        for sitemap in root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}sitemap'):
-            sitemap_url = sitemap.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
-            urls.extend(get_sitemap_urls(sitemap_url))
-        for url in root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}url'):
-            loc = url.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
-            urls.append(loc)
-        return urls
+        for line in response.text.split('\n'):
+            if line.lower().startswith('sitemap:'):
+                return line.split(': ')[1].strip()
     except Exception as e:
-        st.warning(f"Failed to fetch sitemap from {url}: {str(e)}")
-        return []
+        st.warning(f"Failed to fetch robots.txt from {robots_txt_url}: {str(e)}")
+    return None
+
+def process_sitemap(content):
+    root = ET.fromstring(content)
+    urls = []
+    for sitemap in root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}sitemap'):
+        sitemap_url = sitemap.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
+        urls.extend(get_sitemap_urls(sitemap_url))
+    for url in root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}url'):
+        loc = url.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
+        urls.append(loc)
+    return urls
+
+def get_sitemap_urls(url):
+    # First, try the standard sitemap location
+    sitemap_url = urljoin(url, '/sitemap.xml')
+    try:
+        response = http.get(sitemap_url, headers=HEADERS)
+        response.raise_for_status()
+        return process_sitemap(response.content)
+    except Exception as e:
+        st.warning(f"Failed to fetch sitemap from {sitemap_url}: {str(e)}")
+
+    # If standard location fails, try to find sitemap URL in robots.txt
+    sitemap_url = get_sitemap_from_robots_txt(url)
+    if sitemap_url:
+        try:
+            response = http.get(sitemap_url, headers=HEADERS)
+            response.raise_for_status()
+            return process_sitemap(response.content)
+        except Exception as e:
+            st.warning(f"Failed to fetch sitemap from {sitemap_url}: {str(e)}")
+
+    return []
 
 @rate_limiter
 def get_jina_reader_content(url):
@@ -119,7 +147,7 @@ def main():
         
         if st.button('Fetch Sitemap and Content'):
             if website:
-                st.session_state.sitemap_urls = get_sitemap_urls(urljoin(website, '/sitemap.xml'))
+                st.session_state.sitemap_urls = get_sitemap_urls(website)
                 
                 if st.session_state.sitemap_urls:
                     st.subheader("Sitemap URLs:")
