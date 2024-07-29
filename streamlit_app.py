@@ -8,6 +8,7 @@ from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 import threading
 from bs4 import BeautifulSoup
+import re
 
 # Initialize session state
 if 'sitemap_urls' not in st.session_state:
@@ -89,9 +90,22 @@ def get_sitemap_from_robots_txt(url, depth=0):
     try:
         response = http.get(robots_txt_url, headers=HEADERS, timeout=10)
         response.raise_for_status()
-        for line in response.text.split('\n'):
-            if line.lower().startswith('sitemap:'):
-                return line.split(': ')[1].strip()
+        content = response.text
+        
+        # Check for sitemap in robots.txt content
+        sitemap_match = re.search(r'Sitemap:\s*(https?://\S+)', content, re.IGNORECASE)
+        if sitemap_match:
+            return sitemap_match.group(1)
+        
+        # Check for XML content
+        xml_match = re.search(r'<\?xml.*?>.*?<sitemapindex', content, re.DOTALL)
+        if xml_match:
+            # Extract URLs from the XML content
+            root = ET.fromstring(content[xml_match.start():])
+            for sitemap in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc'):
+                return sitemap.text  # Return the first sitemap URL found
+        
+        st.warning(f"No sitemap found in robots.txt from {robots_txt_url}")
     except requests.exceptions.RequestException as e:
         st.warning(f"Failed to fetch robots.txt from {robots_txt_url}: {str(e)}")
     return None
@@ -115,38 +129,50 @@ def process_sitemap(content, depth=0):
 
 def get_sitemap_urls(url, depth=0):
     if depth > 5:  # Limit recursion depth
+        st.warning(f"Reached maximum recursion depth for {url}")
         return []
     
-    # First, try the standard sitemap location
-    sitemap_url = urljoin(url, '/sitemap.xml')
-    try:
-        response = http.get(sitemap_url, headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        return process_sitemap(response.content, depth)
-    except requests.exceptions.RequestException as e:
-        st.warning(f"Failed to fetch sitemap from {sitemap_url}: {str(e)}")
-
-    # If standard location fails, try to find sitemap URL in robots.txt
+    st.info(f"Attempting to fetch sitemap for {url}")
+    
+    # First, try to find sitemap URL in robots.txt
+    st.info("Attempting to find sitemap URL in robots.txt")
     sitemap_url = get_sitemap_from_robots_txt(url, depth)
     if sitemap_url:
         try:
+            st.info(f"Found sitemap URL: {sitemap_url}")
             response = http.get(sitemap_url, headers=HEADERS, timeout=10)
             response.raise_for_status()
+            st.success(f"Successfully fetched sitemap from {sitemap_url}")
             return process_sitemap(response.content, depth)
         except requests.exceptions.RequestException as e:
             st.warning(f"Failed to fetch sitemap from {sitemap_url}: {str(e)}")
 
+    # If robots.txt method fails, try the standard sitemap location
+    sitemap_url = urljoin(url, '/sitemap.xml')
+    try:
+        st.info(f"Trying standard sitemap location: {sitemap_url}")
+        response = http.get(sitemap_url, headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        st.success(f"Successfully fetched sitemap from {sitemap_url}")
+        return process_sitemap(response.content, depth)
+    except requests.exceptions.RequestException as e:
+        st.warning(f"Failed to fetch sitemap from {sitemap_url}: {str(e)}")
+
     # If all else fails, try to scrape links from the homepage
+    st.info(f"Attempting to scrape links from the homepage: {url}")
     try:
         response = http.get(url, headers=HEADERS, timeout=10)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
-        return [urljoin(url, a['href']) for a in soup.find_all('a', href=True)]
+        links = [urljoin(url, a['href']) for a in soup.find_all('a', href=True)]
+        st.success(f"Successfully scraped {len(links)} links from the homepage")
+        return links
     except requests.exceptions.RequestException as e:
         st.warning(f"Failed to scrape links from homepage {url}: {str(e)}")
     except ImportError:
         st.warning("BeautifulSoup4 is not installed. Unable to scrape links from homepage.")
 
+    st.error(f"Unable to find any URLs for {url}")
     return []
 
 @rate_limiter
@@ -194,7 +220,7 @@ def main():
                     content_df = pd.DataFrame(st.session_state.content_data)
                     st.dataframe(content_df)
                 else:
-                    st.warning("No URLs found. The site might not have a sitemap, or there might be an issue accessing it.")
+                    st.error("No URLs found. Please check the debugging information above for more details.")
             else:
                 st.warning('Please enter a website URL')
         
