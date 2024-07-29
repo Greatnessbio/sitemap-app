@@ -7,12 +7,6 @@ from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 import threading
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
 
 # Initialize session state
 if 'content_data' not in st.session_state:
@@ -85,30 +79,8 @@ def check_password():
     else:
         return True
 
-def setup_selenium():
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    driver = webdriver.Chrome(options=chrome_options)
-    return driver
-
-def get_page_content_with_selenium(url, driver):
-    try:
-        driver.get(url)
-        # Wait for the page to load (adjust timeout as needed)
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        
-        # Scroll to bottom to trigger any lazy-loading
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(2)  # Wait for any dynamic content to load
-        
-        return driver.page_source
-    except TimeoutException:
-        st.warning(f"Timeout while loading {url}")
-        return None
-
-def extract_links(soup, base_url):
+def extract_links(content, base_url):
+    soup = BeautifulSoup(content, 'html.parser')
     links = []
     for a in soup.find_all('a', href=True):
         href = a['href']
@@ -116,42 +88,6 @@ def extract_links(soup, base_url):
         if full_url.startswith(base_url):  # Only include internal links
             links.append(full_url)
     return links
-
-def crawl_website(base_url, max_pages=100):
-    driver = setup_selenium()
-    crawled_urls = set()
-    to_crawl = [base_url]
-    content_data = []
-
-    while to_crawl and len(crawled_urls) < max_pages:
-        url = to_crawl.pop(0)
-        if url in crawled_urls:
-            continue
-        
-        st.info(f"Crawling: {url}")
-        page_content = get_page_content_with_selenium(url, driver)
-        
-        if page_content:
-            crawled_urls.add(url)
-            soup = BeautifulSoup(page_content, 'html.parser')
-            
-            # Extract content
-            content = ' '.join([p.text for p in soup.find_all('p')])
-            content_data.append({
-                'URL': url,
-                'Full Content': content
-            })
-            
-            # Extract new links
-            new_links = extract_links(soup, base_url)
-            for link in new_links:
-                if link not in crawled_urls and link not in to_crawl:
-                    to_crawl.append(link)
-        
-        st.success(f"Processed: {url}")
-
-    driver.quit()
-    return content_data
 
 @rate_limiter
 def get_jina_reader_content(url):
@@ -162,10 +98,43 @@ def get_jina_reader_content(url):
         time.sleep(DELAY_BETWEEN_REQUESTS)  # Ensure 3-second delay between requests
         return response.text
     except requests.exceptions.RequestException as e:
-        return f"Failed to fetch content: {str(e)}"
+        st.warning(f"Failed to fetch content from {url}: {str(e)}")
+        return None
+
+def crawl_website(base_url, max_pages=100):
+    crawled_urls = set()
+    to_crawl = [base_url]
+    content_data = []
+
+    while to_crawl and len(crawled_urls) < max_pages:
+        url = to_crawl.pop(0)
+        if url in crawled_urls:
+            continue
+        
+        st.info(f"Crawling: {url}")
+        page_content = get_jina_reader_content(url)
+        
+        if page_content:
+            crawled_urls.add(url)
+            
+            # Extract content
+            content_data.append({
+                'URL': url,
+                'Full Content': page_content
+            })
+            
+            # Extract new links
+            new_links = extract_links(page_content, base_url)
+            for link in new_links:
+                if link not in crawled_urls and link not in to_crawl:
+                    to_crawl.append(link)
+        
+        st.success(f"Processed: {url}")
+
+    return content_data
 
 def main():
-    st.title('Web Scraper App with Deep Content Extraction')
+    st.title('Web Scraper App with Jina Reader')
 
     if check_password():
         st.success("Logged in successfully!")
