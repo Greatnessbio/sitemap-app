@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import xml.etree.ElementTree as ET
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 import time
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
@@ -146,6 +146,33 @@ def process_sitemap(content, base_url, depth=0, processed_urls=None):
         st.warning(f"Failed to parse sitemap XML: {str(e)}")
         return []
 
+def crawl_website(base_url, max_pages=100):
+    crawled_urls = set()
+    to_crawl = [base_url]
+    
+    while to_crawl and len(crawled_urls) < max_pages:
+        url = to_crawl.pop(0)
+        if url in crawled_urls:
+            continue
+        
+        try:
+            response = http.get(url, headers=HEADERS, timeout=10)
+            response.raise_for_status()
+            crawled_urls.add(url)
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            for a_tag in soup.find_all('a', href=True):
+                href = a_tag['href']
+                full_url = urljoin(base_url, href)
+                if full_url.startswith(base_url) and full_url not in crawled_urls:
+                    to_crawl.append(full_url)
+            
+            st.info(f"Crawled: {url}")
+        except requests.exceptions.RequestException as e:
+            st.warning(f"Failed to crawl {url}: {str(e)}")
+    
+    return list(crawled_urls)
+
 def get_sitemap_urls(url, depth=0, processed_urls=None):
     if processed_urls is None:
         processed_urls = set()
@@ -165,7 +192,9 @@ def get_sitemap_urls(url, depth=0, processed_urls=None):
             response = http.get(sitemap_url, headers=HEADERS, timeout=10)
             response.raise_for_status()
             st.success(f"Successfully fetched sitemap from {sitemap_url}")
-            return process_sitemap(response.content, url, depth, processed_urls)
+            urls = process_sitemap(response.content, url, depth, processed_urls)
+            if urls:
+                return urls
         except requests.exceptions.RequestException as e:
             st.warning(f"Failed to fetch sitemap from {sitemap_url}: {str(e)}")
 
@@ -177,23 +206,18 @@ def get_sitemap_urls(url, depth=0, processed_urls=None):
             response = http.get(sitemap_url, headers=HEADERS, timeout=10)
             response.raise_for_status()
             st.success(f"Successfully fetched sitemap from {sitemap_url}")
-            return process_sitemap(response.content, url, depth, processed_urls)
+            urls = process_sitemap(response.content, url, depth, processed_urls)
+            if urls:
+                return urls
         except requests.exceptions.RequestException as e:
             st.warning(f"Failed to fetch sitemap from {sitemap_url}: {str(e)}")
 
-    # If all else fails, try to scrape links from the homepage
-    st.info(f"Attempting to scrape links from the homepage: {url}")
-    try:
-        response = http.get(url, headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, 'html.parser')
-        links = [urljoin(url, a['href']) for a in soup.find_all('a', href=True)]
-        st.success(f"Successfully scraped {len(links)} links from the homepage")
-        return links
-    except requests.exceptions.RequestException as e:
-        st.warning(f"Failed to scrape links from homepage {url}: {str(e)}")
-    except ImportError:
-        st.warning("BeautifulSoup4 is not installed. Unable to scrape links from homepage.")
+    # If sitemap methods fail, crawl the website
+    st.info(f"Sitemap methods failed. Starting recursive crawl of {url}")
+    crawled_urls = crawl_website(url)
+    if crawled_urls:
+        st.success(f"Successfully crawled {len(crawled_urls)} URLs from the website")
+        return crawled_urls
 
     st.error(f"Unable to find any URLs for {url}")
     return []
@@ -219,11 +243,11 @@ def main():
         
         if st.button('Fetch Sitemap and Content'):
             if website:
-                with st.spinner('Fetching sitemap...'):
+                with st.spinner('Fetching sitemap and crawling website...'):
                     st.session_state.sitemap_urls = get_sitemap_urls(website)
                 
                 if st.session_state.sitemap_urls:
-                    st.subheader("Sitemap URLs:")
+                    st.subheader("Found URLs:")
                     sitemap_df = pd.DataFrame({'URL': st.session_state.sitemap_urls})
                     st.dataframe(sitemap_df)
                     
@@ -249,7 +273,7 @@ def main():
         
         # Display tables if data exists in session state
         if st.session_state.sitemap_urls:
-            st.subheader("Sitemap URLs:")
+            st.subheader("Found URLs:")
             sitemap_df = pd.DataFrame({'URL': st.session_state.sitemap_urls})
             st.dataframe(sitemap_df)
         
