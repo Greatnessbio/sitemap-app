@@ -2,3 +2,6 @@ streamlit
 requests 
 beautifulsoup4 
 pyyaml
+pandas 
+beautifulsoup4 
+selenium
