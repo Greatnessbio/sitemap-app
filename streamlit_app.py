@@ -7,6 +7,7 @@ import time
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 import threading
+from bs4 import BeautifulSoup
 
 # Initialize session state
 if 'sitemap_urls' not in st.session_state:
@@ -81,48 +82,70 @@ def check_password():
     else:
         return True
 
-def get_sitemap_from_robots_txt(url):
+def get_sitemap_from_robots_txt(url, depth=0):
+    if depth > 5:  # Limit recursion depth
+        return None
     robots_txt_url = urljoin(url, '/robots.txt')
     try:
-        response = http.get(robots_txt_url, headers=HEADERS)
+        response = http.get(robots_txt_url, headers=HEADERS, timeout=10)
         response.raise_for_status()
         for line in response.text.split('\n'):
             if line.lower().startswith('sitemap:'):
                 return line.split(': ')[1].strip()
-    except Exception as e:
+    except requests.exceptions.RequestException as e:
         st.warning(f"Failed to fetch robots.txt from {robots_txt_url}: {str(e)}")
     return None
 
-def process_sitemap(content):
-    root = ET.fromstring(content)
-    urls = []
-    for sitemap in root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}sitemap'):
-        sitemap_url = sitemap.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
-        urls.extend(get_sitemap_urls(sitemap_url))
-    for url in root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}url'):
-        loc = url.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
-        urls.append(loc)
-    return urls
+def process_sitemap(content, depth=0):
+    if depth > 5:  # Limit recursion depth
+        return []
+    try:
+        root = ET.fromstring(content)
+        urls = []
+        for sitemap in root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}sitemap'):
+            sitemap_url = sitemap.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
+            urls.extend(get_sitemap_urls(sitemap_url, depth + 1))
+        for url in root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}url'):
+            loc = url.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
+            urls.append(loc)
+        return urls
+    except ET.ParseError as e:
+        st.warning(f"Failed to parse sitemap XML: {str(e)}")
+        return []
 
-def get_sitemap_urls(url):
+def get_sitemap_urls(url, depth=0):
+    if depth > 5:  # Limit recursion depth
+        return []
+    
     # First, try the standard sitemap location
     sitemap_url = urljoin(url, '/sitemap.xml')
     try:
-        response = http.get(sitemap_url, headers=HEADERS)
+        response = http.get(sitemap_url, headers=HEADERS, timeout=10)
         response.raise_for_status()
-        return process_sitemap(response.content)
-    except Exception as e:
+        return process_sitemap(response.content, depth)
+    except requests.exceptions.RequestException as e:
         st.warning(f"Failed to fetch sitemap from {sitemap_url}: {str(e)}")
 
     # If standard location fails, try to find sitemap URL in robots.txt
-    sitemap_url = get_sitemap_from_robots_txt(url)
+    sitemap_url = get_sitemap_from_robots_txt(url, depth)
     if sitemap_url:
         try:
-            response = http.get(sitemap_url, headers=HEADERS)
+            response = http.get(sitemap_url, headers=HEADERS, timeout=10)
             response.raise_for_status()
-            return process_sitemap(response.content)
-        except Exception as e:
+            return process_sitemap(response.content, depth)
+        except requests.exceptions.RequestException as e:
             st.warning(f"Failed to fetch sitemap from {sitemap_url}: {str(e)}")
+
+    # If all else fails, try to scrape links from the homepage
+    try:
+        response = http.get(url, headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+        return [urljoin(url, a['href']) for a in soup.find_all('a', href=True)]
+    except requests.exceptions.RequestException as e:
+        st.warning(f"Failed to scrape links from homepage {url}: {str(e)}")
+    except ImportError:
+        st.warning("BeautifulSoup4 is not installed. Unable to scrape links from homepage.")
 
     return []
 
@@ -130,7 +153,7 @@ def get_sitemap_urls(url):
 def get_jina_reader_content(url):
     jina_url = f"https://r.jina.ai/{url}"
     try:
-        response = http.get(jina_url)
+        response = http.get(jina_url, timeout=10)
         response.raise_for_status()
         time.sleep(DELAY_BETWEEN_REQUESTS)  # Ensure 3-second delay between requests
         return response.text
@@ -147,7 +170,8 @@ def main():
         
         if st.button('Fetch Sitemap and Content'):
             if website:
-                st.session_state.sitemap_urls = get_sitemap_urls(website)
+                with st.spinner('Fetching sitemap...'):
+                    st.session_state.sitemap_urls = get_sitemap_urls(website)
                 
                 if st.session_state.sitemap_urls:
                     st.subheader("Sitemap URLs:")
@@ -170,7 +194,7 @@ def main():
                     content_df = pd.DataFrame(st.session_state.content_data)
                     st.dataframe(content_df)
                 else:
-                    st.warning("No URLs found in the sitemap.")
+                    st.warning("No URLs found. The site might not have a sitemap, or there might be an issue accessing it.")
             else:
                 st.warning('Please enter a website URL')
         
