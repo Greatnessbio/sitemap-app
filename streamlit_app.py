@@ -118,14 +118,29 @@ def process_sitemap(content, base_url, depth=0, processed_urls=None):
     try:
         root = ET.fromstring(content)
         urls = []
-        for sitemap in root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}sitemap'):
-            sitemap_url = sitemap.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
-            if sitemap_url not in processed_urls:
-                processed_urls.add(sitemap_url)
-                urls.extend(get_sitemap_urls(sitemap_url, depth + 1, processed_urls))
-        for url in root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}url'):
-            loc = url.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
-            urls.append(loc)
+        
+        # Check if this is a sitemap index
+        sitemaps = root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}sitemap')
+        if sitemaps:
+            st.info("This is a sitemap index. Processing individual sitemaps...")
+            for sitemap in sitemaps:
+                sitemap_url = sitemap.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
+                if sitemap_url not in processed_urls:
+                    processed_urls.add(sitemap_url)
+                    st.info(f"Fetching sitemap: {sitemap_url}")
+                    try:
+                        response = http.get(sitemap_url, headers=HEADERS, timeout=10)
+                        response.raise_for_status()
+                        urls.extend(process_sitemap(response.content, base_url, depth + 1, processed_urls))
+                    except requests.exceptions.RequestException as e:
+                        st.warning(f"Failed to fetch sitemap from {sitemap_url}: {str(e)}")
+        else:
+            # This is a regular sitemap, extract URLs
+            for url in root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}url'):
+                loc = url.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
+                urls.append(loc)
+            st.info(f"Extracted {len(urls)} URLs from sitemap")
+        
         return urls
     except ET.ParseError as e:
         st.warning(f"Failed to parse sitemap XML: {str(e)}")
