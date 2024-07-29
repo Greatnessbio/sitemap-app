@@ -110,7 +110,9 @@ def get_sitemap_from_robots_txt(url, depth=0):
         st.warning(f"Failed to fetch robots.txt from {robots_txt_url}: {str(e)}")
     return None
 
-def process_sitemap(content, depth=0):
+def process_sitemap(content, base_url, depth=0, processed_urls=None):
+    if processed_urls is None:
+        processed_urls = set()
     if depth > 5:  # Limit recursion depth
         return []
     try:
@@ -118,7 +120,9 @@ def process_sitemap(content, depth=0):
         urls = []
         for sitemap in root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}sitemap'):
             sitemap_url = sitemap.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
-            urls.extend(get_sitemap_urls(sitemap_url, depth + 1))
+            if sitemap_url not in processed_urls:
+                processed_urls.add(sitemap_url)
+                urls.extend(get_sitemap_urls(sitemap_url, depth + 1, processed_urls))
         for url in root.findall('{http://www.sitemaps.org/schemas/sitemap/0.9}url'):
             loc = url.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc').text
             urls.append(loc)
@@ -127,36 +131,40 @@ def process_sitemap(content, depth=0):
         st.warning(f"Failed to parse sitemap XML: {str(e)}")
         return []
 
-def get_sitemap_urls(url, depth=0):
-    if depth > 5:  # Limit recursion depth
-        st.warning(f"Reached maximum recursion depth for {url}")
+def get_sitemap_urls(url, depth=0, processed_urls=None):
+    if processed_urls is None:
+        processed_urls = set()
+    if depth > 5 or url in processed_urls:  # Limit recursion depth and avoid loops
+        st.warning(f"Reached maximum recursion depth or already processed URL: {url}")
         return []
     
+    processed_urls.add(url)
     st.info(f"Attempting to fetch sitemap for {url}")
     
     # First, try to find sitemap URL in robots.txt
     st.info("Attempting to find sitemap URL in robots.txt")
     sitemap_url = get_sitemap_from_robots_txt(url, depth)
-    if sitemap_url:
+    if sitemap_url and sitemap_url not in processed_urls:
         try:
             st.info(f"Found sitemap URL: {sitemap_url}")
             response = http.get(sitemap_url, headers=HEADERS, timeout=10)
             response.raise_for_status()
             st.success(f"Successfully fetched sitemap from {sitemap_url}")
-            return process_sitemap(response.content, depth)
+            return process_sitemap(response.content, url, depth, processed_urls)
         except requests.exceptions.RequestException as e:
             st.warning(f"Failed to fetch sitemap from {sitemap_url}: {str(e)}")
 
     # If robots.txt method fails, try the standard sitemap location
     sitemap_url = urljoin(url, '/sitemap.xml')
-    try:
-        st.info(f"Trying standard sitemap location: {sitemap_url}")
-        response = http.get(sitemap_url, headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        st.success(f"Successfully fetched sitemap from {sitemap_url}")
-        return process_sitemap(response.content, depth)
-    except requests.exceptions.RequestException as e:
-        st.warning(f"Failed to fetch sitemap from {sitemap_url}: {str(e)}")
+    if sitemap_url not in processed_urls:
+        try:
+            st.info(f"Trying standard sitemap location: {sitemap_url}")
+            response = http.get(sitemap_url, headers=HEADERS, timeout=10)
+            response.raise_for_status()
+            st.success(f"Successfully fetched sitemap from {sitemap_url}")
+            return process_sitemap(response.content, url, depth, processed_urls)
+        except requests.exceptions.RequestException as e:
+            st.warning(f"Failed to fetch sitemap from {sitemap_url}: {str(e)}")
 
     # If all else fails, try to scrape links from the homepage
     st.info(f"Attempting to scrape links from the homepage: {url}")
